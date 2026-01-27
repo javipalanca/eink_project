@@ -3,6 +3,9 @@
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <SPI.h>
 
+#include <FS.h>
+#include <LittleFS.h>
+
 #include "museu_logo_tricolor_240w.h"
 
 #include "esp_sleep.h"
@@ -26,11 +29,11 @@ GxEPD2_3C<GxEPD2_750c_Z08, GxEPD2_750c_Z08::HEIGHT> display(
 
 // ===== Parámetros fáciles de tocar =====
 static const uint32_t SLIDE_MS = 30UL * 1000UL; // periodo entre slides
-static const int ROT = 1;                       // <-- vertical OK en tu panel
+static const int ROT = 1;                       // vertical OK en tu panel
 
-// Layout (480x800 en vertical con ROT=1)
+// Layout 480x800
 static const int PAD = 14;
-static const int HEADER_H = 130;                // cabecera más compacta
+static const int HEADER_H = 130;                // cabecera compacta
 static const int NUM_SLIDES = 3;
 
 // Full refresh cada 2 rotaciones completas (2*3=6)
@@ -40,7 +43,9 @@ static const int FULL_EVERY_N_CHANGES = 2 * NUM_SLIDES;
 RTC_DATA_ATTR int slide_idx = 0;
 RTC_DATA_ATTR int change_count = 0;
 
-// ------------------ Power ------------------
+// ------------------------------------------------------------
+// Power
+// ------------------------------------------------------------
 
 void powerOnEPD()
 {
@@ -80,25 +85,109 @@ void goDeepSleep()
   esp_deep_sleep_start();
 }
 
-// ------------------ Limpieza fuerte (borra “fantasmas” de orientación previa) ------------------
+// ------------------------------------------------------------
+// Utilidades TRI
+// Formato: "TRI1" + uint16 w + uint16 h (LE) + black_plane + red_plane
+// ------------------------------------------------------------
+
+static uint16_t read_u16_le(File& f)
+{
+  uint8_t b0 = f.read();
+  uint8_t b1 = f.read();
+  return (uint16_t)b0 | ((uint16_t)b1 << 8);
+}
+
+// Dibuja un .tri de 480x670 en (x,y) usando poca RAM (fila a fila)
+bool drawTriFromLittleFS(const char* path, int x, int y)
+{
+  File f = LittleFS.open(path, "r");
+  if (!f) { Serial.println("ERR open TRI"); return false; }
+
+  char magic[4];
+  if (f.readBytes(magic, 4) != 4 || memcmp(magic, "TRI1", 4) != 0)
+  {
+    Serial.println("ERR TRI magic");
+    f.close();
+    return false;
+  }
+
+  uint16_t w = read_u16_le(f);
+  uint16_t h = read_u16_le(f);
+
+  const uint32_t bytes_per_row = (w + 7) / 8;
+  const uint32_t plane_size = bytes_per_row * h;
+
+  if (w == 0 || h == 0) { Serial.println("ERR TRI size"); f.close(); return false; }
+
+  // Esperado para tu cuerpo: 480x670 (con HEADER_H=130)
+  if (w != 480 || h != (uint16_t)(display.height() - HEADER_H))
+  {
+    Serial.printf("WARN TRI dims %ux%u (expected 480x%d)\n", w, h, display.height() - HEADER_H);
+  }
+
+  const uint32_t black_off = 8;
+  const uint32_t red_off   = 8 + plane_size;
+
+  // buffer de 1 fila (480px -> 60 bytes). Si el TRI tiene otro ancho, ajusta esto.
+  uint8_t rowbuf[60];
+  if (bytes_per_row > sizeof(rowbuf))
+  {
+    Serial.println("ERR TRI rowbuf too small");
+    f.close();
+    return false;
+  }
+
+  // Plano negro
+  f.seek(black_off, SeekSet);
+  for (uint16_t yy = 0; yy < h; yy++)
+  {
+    if (f.read(rowbuf, bytes_per_row) != (int)bytes_per_row)
+    {
+      Serial.println("ERR TRI read black");
+      f.close();
+      return false;
+    }
+    display.drawBitmap(x, y + yy, rowbuf, w, 1, GxEPD_BLACK);
+  }
+
+  // Plano rojo
+  f.seek(red_off, SeekSet);
+  for (uint16_t yy = 0; yy < h; yy++)
+  {
+    if (f.read(rowbuf, bytes_per_row) != (int)bytes_per_row)
+    {
+      Serial.println("ERR TRI read red");
+      f.close();
+      return false;
+    }
+    display.drawBitmap(x, y + yy, rowbuf, w, 1, GxEPD_RED);
+  }
+
+  f.close();
+  return true;
+}
+
+// ------------------------------------------------------------
+// Limpieza fuerte para borrar “fantasmas” tras cambios de orientación
+// ------------------------------------------------------------
 
 void hardClear()
 {
-  // 1) Blanco completo
   display.setFullWindow();
+
   display.firstPage();
   do { display.fillScreen(GxEPD_WHITE); } while (display.nextPage());
 
-  // 2) Negro completo (ayuda a “resetear” el pigmento)
   display.firstPage();
   do { display.fillScreen(GxEPD_BLACK); } while (display.nextPage());
 
-  // 3) Blanco completo otra vez
   display.firstPage();
   do { display.fillScreen(GxEPD_WHITE); } while (display.nextPage());
 }
 
-// ------------------ Dibujo ------------------
+// ------------------------------------------------------------
+// Dibujo cabecera / cuerpo
+// ------------------------------------------------------------
 
 void drawHeaderFull()
 {
@@ -108,36 +197,43 @@ void drawHeaderFull()
   const int x = PAD;
   const int y = 10;
 
-  // En tu versión de GxEPD2: NO hay drawBitmaps => dibujamos dos veces
   display.drawBitmap(x, y, museu_logo_240_black, MUSEU_LOGO_240_W, MUSEU_LOGO_240_H, GxEPD_BLACK);
   display.drawBitmap(x, y, museu_logo_240_red,   MUSEU_LOGO_240_W, MUSEU_LOGO_240_H, GxEPD_RED);
 
-  // Línea roja separadora (subida para ganar espacio BW)
+  // Línea roja separadora (arriba para ganar espacio BW)
   const int sep_y = HEADER_H - 12;
   display.fillRect(PAD, sep_y, display.width() - 2 * PAD, 6, GxEPD_RED);
 }
 
-// Cuerpo: SOLO B/N para parciales más rápidos y sin degradar rojo
-void drawBodyBW(int idx)
+// Cuerpo: IBM desde imagen TRI; otros texto
+void drawBody(int idx)
 {
   const int y0 = HEADER_H;
   const int h  = display.height() - HEADER_H;
+
+  // Limpiar cuerpo
   display.fillRect(0, y0, display.width(), h, GxEPD_WHITE);
 
+  if (idx == 0)
+  {
+    // IBM: imagen (480x670) desde LittleFS
+    bool ok = drawTriFromLittleFS("/slides/ibm.tri", 0, y0);
+    if (!ok)
+    {
+      display.setFont(&FreeMonoBold12pt7b);
+      display.setTextColor(GxEPD_BLACK);
+      display.setCursor(PAD, y0 + 60);
+      display.print("Missing /slides/ibm.tri");
+    }
+    return;
+  }
+
+  // Texto para Apple II y PET
   const char* title = "";
   const char* subtitle = "";
   const char* bullets[4] = { "", "", "", "" };
 
-  if (idx == 0)
-  {
-    title = "IBM PC PS/2";
-    subtitle = "Familia PS/2 (finals 80)";
-    bullets[0] = "- Arquitectura IBM, era VGA/MCGA";
-    bullets[1] = "- Micro Channel (MCA) en molts models";
-    bullets[2] = "- Clau en la normalitzacio del PC";
-    bullets[3] = "- Icona del pas als 90";
-  }
-  else if (idx == 1)
+  if (idx == 1)
   {
     title = "Apple II";
     subtitle = "Microordinador pioner (1977+)";
@@ -174,6 +270,10 @@ void drawBodyBW(int idx)
   }
 }
 
+// ------------------------------------------------------------
+// Full / Partial
+// ------------------------------------------------------------
+
 void fullDraw(int idx)
 {
   display.setFullWindow();
@@ -181,7 +281,7 @@ void fullDraw(int idx)
   do {
     display.fillScreen(GxEPD_WHITE);
     drawHeaderFull();
-    drawBodyBW(idx);
+    drawBody(idx);
   } while (display.nextPage());
 }
 
@@ -189,25 +289,62 @@ void partialBodyUpdate(int idx)
 {
   const int y0 = HEADER_H;
   const int h  = display.height() - HEADER_H;
-
   if (h <= 0) { fullDraw(idx); return; }
 
+  // Ventana parcial SOLO cuerpo
   display.setPartialWindow(0, y0, display.width(), h);
+
   display.firstPage();
   do {
-    drawBodyBW(idx);
+    drawBody(idx);
   } while (display.nextPage());
 }
 
-// ------------------ Setup ------------------
+// ------------------------------------------------------------
+// Setup
+// ------------------------------------------------------------
 
 void setup()
 {
+  Serial.begin(115200);
+  delay(200);
+
+  //////
+
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount FAILED");
+    return;
+  }
+  Serial.println("LittleFS mounted OK");
+
+  File root = LittleFS.open("/slides");
+  if (!root || !root.isDirectory()) {
+    Serial.println("No /slides directory");
+    return;
+  }
+
+  File f = root.openNextFile();
+  while (f) {
+    Serial.print("File: ");
+    Serial.print(f.name());
+    Serial.print("  Size: ");
+    Serial.println((unsigned long)f.size());
+    f = root.openNextFile();
+  }
+  //////
+
   powerOnEPD();
 
   SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
   display.init(115200);
   display.setRotation(ROT);
+
+  // Mount LittleFS (formatea si falla)
+  if (!LittleFS.begin(true)) {
+    Serial.println("LittleFS mount FAILED");
+  } else {
+    Serial.println("LittleFS mounted OK");
+  }
 
   const auto cause = esp_sleep_get_wakeup_cause();
   bool doFull = false;
@@ -220,7 +357,7 @@ void setup()
   }
   else
   {
-    // Primer arranque / tras reprogramar: limpiar fuerte para borrar restos del modo anterior
+    // Primer arranque / tras reprogramar: limpiar fuerte para borrar restos previos
     hardClear();
     doFull = true;
   }
