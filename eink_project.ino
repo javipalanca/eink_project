@@ -8,7 +8,7 @@
 
 #include "museu_logo_tricolor_240w.h"
 
-#include "esp_sleep.h"
+#include "esp_sleep.h" 
 #include "driver/rtc_io.h"
 
 // ===== Pines e-Paper -> ESP32 =====
@@ -34,10 +34,10 @@ static const int ROT = 1;                       // vertical OK en tu panel
 // Layout 480x800
 static const int PAD = 14;
 static const int HEADER_H = 130;                // cabecera compacta
-static const int NUM_SLIDES = 3;
+static int NUM_SLIDES = 0;                      // se determina al contar slides
 
-// Full refresh cada 2 rotaciones completas (2*3=6)
-static const int FULL_EVERY_N_CHANGES = 2 * NUM_SLIDES;
+// Full refresh cada 2 rotaciones completas
+static int FULL_EVERY_N_CHANGES = 2 * 3;       // valor por defecto (actualizado si NUM_SLIDES > 0)
 
 // Estado persistente
 RTC_DATA_ATTR int slide_idx = 0;
@@ -151,7 +151,7 @@ bool drawTriFromLittleFS(const char* path, int x, int y)
   }
 
   // Plano rojo
-  f.seek(red_off, SeekSet);
+  /*f.seek(red_off, SeekSet);
   for (uint16_t yy = 0; yy < h; yy++)
   {
     if (f.read(rowbuf, bytes_per_row) != (int)bytes_per_row)
@@ -161,7 +161,7 @@ bool drawTriFromLittleFS(const char* path, int x, int y)
       return false;
     }
     display.drawBitmap(x, y + yy, rowbuf, w, 1, GxEPD_RED);
-  }
+  }*/
 
   f.close();
   return true;
@@ -205,7 +205,7 @@ void drawHeaderFull()
   display.fillRect(PAD, sep_y, display.width() - 2 * PAD, 6, GxEPD_RED);
 }
 
-// Cuerpo: IBM desde imagen TRI; otros texto
+// Cuerpo: carga slide TRI dinámicamente desde /slides/slideNN.tri
 void drawBody(int idx)
 {
   const int y0 = HEADER_H;
@@ -214,59 +214,19 @@ void drawBody(int idx)
   // Limpiar cuerpo
   display.fillRect(0, y0, display.width(), h, GxEPD_WHITE);
 
-  if (idx == 0)
+  // Construir nombre del archivo: slideNN.tri
+  char filepath[32];
+  snprintf(filepath, sizeof(filepath), "/slides/slide%02d.tri", idx);
+
+  bool ok = drawTriFromLittleFS(filepath, 0, y0);
+  if (!ok)
   {
-    // IBM: imagen (480x670) desde LittleFS
-    bool ok = drawTriFromLittleFS("/slides/ibm.tri", 0, y0);
-    if (!ok)
-    {
-      display.setFont(&FreeMonoBold12pt7b);
-      display.setTextColor(GxEPD_BLACK);
-      display.setCursor(PAD, y0 + 60);
-      display.print("Missing /slides/ibm.tri");
-    }
-    return;
-  }
-
-  // Texto para Apple II y PET
-  const char* title = "";
-  const char* subtitle = "";
-  const char* bullets[4] = { "", "", "", "" };
-
-  if (idx == 1)
-  {
-    title = "Apple II";
-    subtitle = "Microordinador pioner (1977+)";
-    bullets[0] = "- Un dels primers exits domestics";
-    bullets[1] = "- Graficos i expansio per ranures";
-    bullets[2] = "- Molt usat en educacio";
-    bullets[3] = "- Ecosistema de software enorme";
-  }
-  else
-  {
-    title = "Commodore PET";
-    subtitle = "All-in-one (1977)";
-    bullets[0] = "- Integrat: monitor + teclat";
-    bullets[1] = "- Popular en aules i laboratoris";
-    bullets[2] = "- BASIC resident, enfoc professional";
-    bullets[3] = "- Disseny iconic: \"PET\"";
-  }
-
-  display.setFont(&FreeMonoBold12pt7b);
-  display.setTextColor(GxEPD_BLACK);
-  display.setCursor(PAD, y0 + 70);
-  display.print(title);
-
-  display.setFont(&FreeMonoBold9pt7b);
-  display.setCursor(PAD, y0 + 105);
-  display.print(subtitle);
-
-  int y = y0 + 150;
-  for (int i = 0; i < 4; i++)
-  {
-    display.setCursor(PAD, y);
-    display.print(bullets[i]);
-    y += 34;
+    display.setFont(&FreeMonoBold12pt7b);
+    display.setTextColor(GxEPD_BLACK);
+    display.setCursor(PAD, y0 + 60);
+    display.print("Missing");
+    display.setCursor(PAD, y0 + 100);
+    display.print(filepath);
   }
 }
 
@@ -309,29 +269,34 @@ void setup()
   Serial.begin(115200);
   delay(200);
 
-  //////
-
+  // Mount LittleFS temprano para contar slides
   if (!LittleFS.begin()) {
     Serial.println("LittleFS mount FAILED");
     return;
   }
   Serial.println("LittleFS mounted OK");
 
-  File root = LittleFS.open("/slides");
-  if (!root || !root.isDirectory()) {
-    Serial.println("No /slides directory");
+  // Contar archivos slide00.tri, slide01.tri, etc.
+  int slideCount = 0;
+  for (int i = 0; i < 100; i++) {
+    char filepath[32];
+    snprintf(filepath, sizeof(filepath), "/slides/slide%02d.tri", i);
+    if (LittleFS.exists(filepath)) {
+      Serial.printf("Found: %s\n", filepath);
+      slideCount++;
+    } else {
+      break; // asume que no hay más slides después del primero que falta
+    }
+  }
+
+  if (slideCount == 0) {
+    Serial.println("No slides found in /slides/slide00.tri, slide01.tri, ...");
     return;
   }
 
-  File f = root.openNextFile();
-  while (f) {
-    Serial.print("File: ");
-    Serial.print(f.name());
-    Serial.print("  Size: ");
-    Serial.println((unsigned long)f.size());
-    f = root.openNextFile();
-  }
-  //////
+  NUM_SLIDES = slideCount;
+  FULL_EVERY_N_CHANGES = 2 * NUM_SLIDES;
+  Serial.printf("Found %d slides, FULL_EVERY_N_CHANGES=%d\n", NUM_SLIDES, FULL_EVERY_N_CHANGES);
 
   powerOnEPD();
 
