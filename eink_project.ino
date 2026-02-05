@@ -1,6 +1,6 @@
 #include <GxEPD2_3C.h>
-#include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMonoBold12pt7b.h>
 #include <SPI.h>
 
 #include <FS.h>
@@ -27,13 +27,13 @@ GxEPD2_3C<GxEPD2_750c_Z08, GxEPD2_750c_Z08::HEIGHT> display(
   GxEPD2_750c_Z08(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
 );
 
-// ===== Parámetros fáciles de tocar =====
+// ===== Parámetros a modificar =====
 static const uint32_t SLIDE_MS = 30UL * 1000UL; // periodo entre slides
 static const int ROT = 1;                       // vertical OK en tu panel
 
 // Layout 480x800
-static const int PAD = 14;
-static const int HEADER_H = 130;                // cabecera compacta
+static const int PAD = 140; //14
+static const int HEADER_H = 100; //130;                // cabecera compacta
 static int NUM_SLIDES = 0;                      // se determina al contar slides
 
 // Full refresh cada 2 rotaciones completas
@@ -86,7 +86,7 @@ void goDeepSleep()
 }
 
 // ------------------------------------------------------------
-// Utilidades TRI
+// ===== Utilidades TRI
 // Formato: "TRI1" + uint16 w + uint16 h (LE) + black_plane + red_plane
 // ------------------------------------------------------------
 
@@ -151,7 +151,7 @@ bool drawTriFromLittleFS(const char* path, int x, int y)
   }
 
   // Plano rojo
-  /*f.seek(red_off, SeekSet);
+  f.seek(red_off, SeekSet);
   for (uint16_t yy = 0; yy < h; yy++)
   {
     if (f.read(rowbuf, bytes_per_row) != (int)bytes_per_row)
@@ -161,7 +161,7 @@ bool drawTriFromLittleFS(const char* path, int x, int y)
       return false;
     }
     display.drawBitmap(x, y + yy, rowbuf, w, 1, GxEPD_RED);
-  }*/
+  }
 
   f.close();
   return true;
@@ -194,7 +194,7 @@ void drawHeaderFull()
   display.fillRect(0, 0, display.width(), HEADER_H, GxEPD_WHITE);
 
   // Logo 240 px ancho, alineado a la izquierda
-  const int x = PAD;
+  const int x = 14;
   const int y = 10;
 
   display.drawBitmap(x, y, museu_logo_240_black, MUSEU_LOGO_240_W, MUSEU_LOGO_240_H, GxEPD_BLACK);
@@ -202,7 +202,7 @@ void drawHeaderFull()
 
   // Línea roja separadora (arriba para ganar espacio BW)
   const int sep_y = HEADER_H - 12;
-  display.fillRect(PAD, sep_y, display.width() - 2 * PAD, 6, GxEPD_RED);
+  display.fillRect(14, sep_y, display.width() - 2 * 14, 6, GxEPD_RED);
 }
 
 // Cuerpo: carga slide TRI dinámicamente desde /slides/slideNN.tri
@@ -318,7 +318,7 @@ void setup()
   {
     slide_idx = (slide_idx + 1) % NUM_SLIDES;
     change_count++;
-    doFull = (change_count % FULL_EVERY_N_CHANGES == 0);
+    //doFull = (change_count % FULL_EVERY_N_CHANGES == 0);
   }
   else
   {
@@ -326,7 +326,7 @@ void setup()
     hardClear();
     doFull = true;
   }
-
+  doFull = true;
   if (doFull) fullDraw(slide_idx);
   else        partialBodyUpdate(slide_idx);
 
